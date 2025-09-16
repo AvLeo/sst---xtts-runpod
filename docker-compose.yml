@@ -1,0 +1,46 @@
+version: "3.9"
+services:
+  stt:
+    build: ./stt
+    container_name: stt
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/cache/hf
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb=256
+    volumes:
+      - /workspace/cache:/cache
+    ports: ["8001:8001"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD","curl","-fsS","http://127.0.0.1:8001/health"]
+      interval: 20s
+      timeout: 3s
+      retries: 5
+
+  tts:
+    build: ./tts
+    container_name: tts
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/cache/hf
+      - COQUI_TOS_AGREED=1
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb=256
+      - SPEAKER_WAV=/voice/locutor.wav   # opcional (clon 10–30s)
+    volumes:
+      - /workspace/cache:/cache
+      - /workspace/voice:/voice
+    ports: ["8002:8002"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD","curl","-fsS","http://127.0.0.1:8002/health"]
+      interval: 20s
+      timeout: 3s
+      retries: 5
