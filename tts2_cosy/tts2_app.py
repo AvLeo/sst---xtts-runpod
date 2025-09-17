@@ -1,10 +1,8 @@
-# tts2_app.py (CosyVoice2, API: /health, /speak)
 from fastapi import FastAPI, Form, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse
-import os, io, numpy as np, soundfile as sf, torch
+import os, io, numpy as np, soundfile as sf, sys
 
-# CosyVoice necesita tener Matcha-TTS en el path (según README)
-import sys
+# Rutas necesarias para CosyVoice
 sys.path.append('/workspace/CosyVoice/third_party/Matcha-TTS')
 sys.path.append('/workspace/CosyVoice')
 
@@ -14,13 +12,13 @@ from cosyvoice.utils.file_utils import load_wav
 app = FastAPI(title="TTS2 · CosyVoice2")
 
 cosy = None
-SR = 24000   # Cosy2 expone sample_rate, pero fijamos 24k como salida WAV
 
 def get_cosy():
     global cosy
     if cosy is None:
         cosy = CosyVoice2('iic/CosyVoice2-0.5B',
                           load_jit=False, load_trt=False, load_vllm=False, fp16=False)
+        print("[Cosy] sample_rate:", cosy.sample_rate)
     return cosy
 
 @app.get("/health")
@@ -28,50 +26,58 @@ def health():
     return {"ok": True}
 
 def _cosy_lang_token(lang: str):
-    # CosyVoice "oficial": zh/en/jp/yue/ko (el resto = cross-lingual, funciona pero no garantizan calidad)
     lang = (lang or "en").lower()
     if lang.startswith("zh"): return "zh"
     if lang.startswith("en"): return "en"
     if lang.startswith("ja") or lang == "jp": return "jp"
     if lang.startswith("ko"): return "ko"
     if lang in {"yue","cantonese"}: return "yue"
-    # para es/pt/fr/it devolvemos 'en' como token básico (y que la prosodia la aporte el prompt)
     return "en"
 
 @app.post("/speak")
 async def speak(
     text: str = Form(...),
     lang: str = Form("en"),
-    # si viene un clon, lo usamos; si no, probamos con uno default (opcional)
+    # referencia opcional (WAV 16k recomendado)
     speaker_wav_file: UploadFile | None = File(None),
     speaker_wav: str | None = Form(None),
+    prompt_text: str | None = Form(""),   # texto aproximado de la referencia (opcional)
 ):
     cv = get_cosy()
     token = _cosy_lang_token(lang)
     print(f"[Cosy] text={len(text)} chars, lang={lang}->{token}")
 
-    # cargamos referencia 16k (requerido por cosy)
-    ref_path = speaker_wav
+    # 1) Resolver WAV de referencia (obligatorio para zero-shot si no hay spk_id)
+    ref_path = None
     if speaker_wav_file:
         data = await speaker_wav_file.read()
         tmp = "/tmp/_cosy_ref.wav"
         with open(tmp, "wb") as f: f.write(data)
         ref_path = tmp
+    elif speaker_wav and os.path.exists(speaker_wav):
+        ref_path = speaker_wav
+    else:
+        # fallback: usa el prompt de ejemplo del repo (sirve para demo)
+        fallback = "/workspace/CosyVoice/asset/zero_shot_prompt.wav"
+        if os.path.exists(fallback):
+            ref_path = fallback
 
-    prompt16 = None
-    if ref_path and os.path.exists(ref_path):
-        prompt16 = load_wav(ref_path, 16000)
+    if not ref_path or not os.path.exists(ref_path):
+        return JSONResponse(
+            {"error": "Se requiere un speaker_wav (16 kHz) para zero-shot. Subí uno en speaker_wav_file o dejá /workspace/CosyVoice/asset/zero_shot_prompt.wav."},
+            status_code=400
+        )
 
+    # 2) Cargar la referencia a 16k como espera Cosy
     try:
-        # Cosy2 devuelve un generador de chunks con 'tts_speech' (tensor [1, T])
+        prompt16 = load_wav(ref_path, 16000)
+    except Exception as e:
+        return JSONResponse({"error": f"no pude leer la referencia: {e}"}, status_code=400)
+
+    # 3) Inference (no pasar strings vacíos donde van tensores)
+    try:
         waves = []
-        # zero-shot si tenemos referencia; si no, tiramos igual (usa estilo por defecto)
-        if prompt16 is not None:
-            g = cv.inference_zero_shot(text, '', prompt16, stream=False)
-        else:
-            # sin prompt: la prosodia sigue siendo buena, pero menos personalizada
-            g = cv.inference_zero_shot(text, '', '', stream=False)
-        for _, out in enumerate(g):
+        for _, out in enumerate(cv.inference_zero_shot(text, prompt_text or "", prompt16, stream=False)):
             wav = out['tts_speech'].squeeze(0).cpu().numpy()
             waves.append(wav)
         audio = np.concatenate(waves, axis=-1) if waves else np.zeros(1, dtype=np.float32)
@@ -80,7 +86,9 @@ async def speak(
         return JSONResponse({"error": str(e)}, status_code=500)
 
     buf = io.BytesIO()
-    sf.write(buf, audio, SR, format="WAV")
+    # usa el sample rate nativo de Cosy (expuesto por la instancia)
+    sr = getattr(cv, "sample_rate", 24000)
+    sf.write(buf, audio, sr, format="WAV")
     buf.seek(0)
     return StreamingResponse(buf, media_type="audio/wav",
                              headers={"X-Engine":"CosyVoice2","X-Lang":token})
