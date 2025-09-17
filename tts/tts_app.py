@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from TTS.api import TTS
 import os, io, numpy as np, soundfile as sf
 
-# --- Torch 2.6 safe loader: allowlist para XTTS ---
+# --- Torch 2.6: allowlist para XTTS (evita UnpicklingError) ---
 import torch
 try:
     from torch.serialization import add_safe_globals
@@ -12,58 +12,84 @@ try:
 except Exception as e:
     print("safe_globals skip:", e)
 
-app = FastAPI(title="TTS · XTTS-v2")
+app = FastAPI(title="TTS · XTTS-v2 robust")
 
 _tts = None
-_default_speaker = None  # nombre de speaker integrado del modelo (si existe)
+_default_speaker = None
 
 def get_tts():
     global _tts, _default_speaker
     if _tts is None:
+        print(">> Cargando XTTS-v2…")
         _tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
-        # intentar descubrir speakers integrados (p.ej. "female-en-5", etc.)
         try:
             sm = _tts.synthesizer.tts_model.speaker_manager
             keys = list(getattr(sm, "speakers", {}).keys())
             _default_speaker = keys[0] if keys else None
-            print("XTTS default_speaker:", _default_speaker)
+            print(">> XTTS default_speaker:", _default_speaker)
         except Exception as e:
-            print("no se pudo inspeccionar speakers:", e)
+            print(">> No pude inspeccionar speakers integrados:", e)
     return _tts
 
 @app.get("/health")
 def health():
     return {"ok": True}
 
+@app.get("/speakers")
+def speakers():
+    tts = get_tts()
+    try:
+        sm = tts.synthesizer.tts_model.speaker_manager
+        keys = list(getattr(sm, "speakers", {}).keys())
+        return {"speakers": keys}
+    except Exception as e:
+        return JSONResponse({"error": f"no speakers: {e}"}, status_code=500)
+
+def _norm_lang(lang: str) -> str:
+    lang = (lang or "en").lower()
+    # normalizamos zh -> “zh” (no zh-cn/zh-CN)
+    if lang.startswith("zh"):
+        return "zh"
+    if lang not in {"es","en","pt","fr","it","zh"}:
+        print(">> lang desconocido, usando en:", lang)
+        return "en"
+    return lang
+
 @app.post("/speak")
 async def speak(
     text: str = Form(...),
-    lang: str = Form("es"),        # es|en|pt|fr|it|zh
-    speed: float = Form(1.0),
-    speaker: str | None = Form(None),    # nombre del speaker integrado (opcional)
-    use_speaker_wav: bool = Form(True),  # usar clon si existe SPEAKER_WAV
+    lang: str = Form("es"),                 # es|en|pt|fr|it|zh
+    speaker: str | None = Form(None),       # nombre de speaker integrado
+    use_speaker_wav: bool = Form(True),     # usar clon si SPEAKER_WAV existe
 ):
     tts = get_tts()
     sr = 24000
+    lang = _norm_lang(lang)
     spk_wav = os.getenv("SPEAKER_WAV") if use_speaker_wav else None
+    print(f">> REQ speak: lang={lang} chars={len(text)} wav={'yes' if (spk_wav and os.path.exists(spk_wav)) else 'no'} speaker={speaker}")
 
     try:
-        # 1) Si hay clon (SPEAKER_WAV), úsalo
         if spk_wav and os.path.exists(spk_wav):
-            audio = tts.tts(text=text, language=lang, speaker_wav=spk_wav, speed=speed)
+            audio = tts.tts(text=text, language=lang, speaker_wav=spk_wav)  # sin speed para evitar incompat.
             used = f"wav:{os.path.basename(spk_wav)}"
         else:
-            # 2) Si vino "speaker" por form, úsalo
             name = speaker or _default_speaker
             if not name:
-                return JSONResponse({"error": "No hay SPEAKER_WAV y el modelo no trae speakers integrados."}, status_code=400)
-            audio = tts.tts(text=text, language=lang, speaker=name, speed=speed)
+                return JSONResponse({"error":"no speaker_wav y el modelo no trae speakers integrados"}, status_code=400)
+            audio = tts.tts(text=text, language=lang, speaker=name)
             used = f"name:{name}"
     except Exception as e:
+        # logueamos y devolvemos error legible
+        print(">> ERROR tts.tts:", repr(e))
         return JSONResponse({"error": str(e)}, status_code=500)
 
-    buf = io.BytesIO()
-    sf.write(buf, np.array(audio), sr, format="WAV")
-    buf.seek(0)
+    try:
+        buf = io.BytesIO()
+        sf.write(buf, np.array(audio), sr, format="WAV")
+        buf.seek(0)
+    except Exception as e:
+        print(">> ERROR escribiendo WAV:", repr(e))
+        return JSONResponse({"error": f"write wav: {e}"}, status_code=500)
+
     return StreamingResponse(buf, media_type="audio/wav",
                              headers={"X-Lang": lang, "X-Speaker": used})
