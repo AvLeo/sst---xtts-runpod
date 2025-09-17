@@ -19,7 +19,7 @@ SR = 24000   # Cosy2 expone sample_rate, pero fijamos 24k como salida WAV
 def get_cosy():
     global cosy
     if cosy is None:
-        cosy = CosyVoice2('/workspace/CosyVoice/pretrained_models/CosyVoice2-0.5B',
+        cosy = CosyVoice2('iic/CosyVoice2-0.5B',
                           load_jit=False, load_trt=False, load_vllm=False, fp16=False)
     return cosy
 
