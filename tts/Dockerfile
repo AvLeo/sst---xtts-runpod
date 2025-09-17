@@ -11,7 +11,7 @@ RUN python -m pip install --upgrade pip && \
 
 ENV HF_HOME=/cache/hf
 ENV COQUI_TOS_AGREED=1
-#ENV SPEAKER_WAV=/voice/locutor.wav
+ENV SPEAKER_WAV=/voices/voz_guille.wav
 COPY tts_app.py /app/app.py
 EXPOSE 8002
 CMD ["uvicorn","app:app","--host","0.0.0.0","--port","8002","--workers","1"]
