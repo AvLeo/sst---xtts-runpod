@@ -2,6 +2,14 @@ from fastapi import FastAPI, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from TTS.api import TTS
 import os, io, numpy as np, soundfile as sf
+import torch
+
+try:
+    from torch.serialization import add_safe_globals
+    from TTS.tts.configs.xtts_config import XttsConfig
+    add_safe_globals([XttsConfig])
+except Exception as e:
+    print("safe_globals skip:", e)
 
 app = FastAPI(title="TTS · XTTS-v2")
 _tts = None
