@@ -35,6 +35,11 @@ def get_tts():
 def health():
     return {"ok": True}
 
+@app.get("/config")
+def config():
+    p = os.getenv("SPEAKER_WAV")
+    return {"SPEAKER_WAV": p, "exists": bool(p and os.path.exists(p))}
+
 @app.get("/speakers")
 def speakers():
     tts = get_tts()
