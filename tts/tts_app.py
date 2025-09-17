@@ -63,6 +63,7 @@ def _norm_lang(lang: str) -> str:
 @app.post("/speak")
 async def speak(
     text: str = Form(...),
+    speed: float = Form(1.0),            # 0.7 a 1.3 (si speaker_wav)
     lang: str = Form("es"),                 # es|en|pt|fr|it|zh
     speaker: str | None = Form(None),       # nombre de speaker integrado
     use_speaker_wav: bool = Form(True),     # usar clon si SPEAKER_WAV existe
@@ -75,7 +76,7 @@ async def speak(
 
     try:
         if spk_wav and os.path.exists(spk_wav):
-            audio = tts.tts(text=text, language=lang, speaker_wav=spk_wav)  # sin speed para evitar incompat.
+            audio = tts.tts(text=text, language=lang, speaker_wav=spk_wav, speed=speed)  # sin speed para evitar incompat.
             used = f"wav:{os.path.basename(spk_wav)}"
         else:
             name = speaker or _default_speaker
