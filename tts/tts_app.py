@@ -36,6 +36,19 @@ def get_tts():
 def health():
     return {"ok": True}
 
+
+@app.get("/models")
+def models():
+    tts = get_tts()
+    try:
+        sm = tts.synthesizer.tts_model.speaker_manager
+        keys = list(getattr(sm, "speakers", {}).keys())
+        return {"model_name": tts.synthesizer.tts_model.__class__.__name__,
+                "num_speakers": len(keys),
+                "speakers": keys}
+    except Exception as e:
+        return JSONResponse({"error": f"no speakers: {e}"}, status_code=500)
+
 @app.get("/config")
 def config():
     p = os.getenv("SPEAKER_WAV")
